@@ -1,0 +1,130 @@
+---
+title: "Ames Housing dataset analysis"
+description: |
+  This analysis applies advanced tree-based learning algorithms to predict housing prices in the ![Ames housing dataset](https://www.kaggle.com/c/house-prices-advanced-regression-techniques/overview). It also identifies YY as the ZZ most important factors in driving housing prices.
+author:
+  - name: Justin Leder
+output: 
+  html_document:
+    code_folding: hide
+    highlight: espresso
+---
+
+```{r setup, include=FALSE}
+# load packages
+library(tidyverse)
+library(plotly)
+library(rmarkdown)
+library(reticulate)
+
+# set knitr
+knitr::opts_chunk$set(echo = TRUE)
+knitr::knit_engines$set(python = reticulate::eng_python)
+```
+
+# Introduction
+
+This kaggle competition asks the user to predict housing prices. The core dataset is show below. It carries 80 possible explanatory features for housing prices, split roughly evenly between numerical and categorical variables.
+
+```{r load data, warning=FALSE,message=FALSE}
+train <- read_csv('data/train.csv')
+test <- read_csv('data/test.csv')
+paged_table(train)
+```
+
+The first thing we notice is that there is a substantial amount of variation is our target variable, with a significant amount of leftward skew. We'll tackle this skew later on.
+
+```{r paged.print=FALSE}
+library(plotly)
+
+density <- density(train$SalePrice)
+
+fig <- plot_ly(x = ~density$x, y = ~density$y, type = 'scatter', mode = 'lines', fill = 'tozeroy')
+fig <- fig %>% layout(xaxis = list(title = 'SalePrice'),
+         yaxis = list(title = 'Density'))
+
+fig
+```
+
+## Dataset preparation
+
+There are three main issues that need to be addressed before we can train our ML models:
+
+-   Missingness
+-   Multicollinearity
+-   Predictor normality
+
+Let's tackle missingess first.
+
+### Missingness
+
+In the table below, we see missingness in \~1/4 (19/80) explanatory variables. \~90% of this missingness comes from 5 variables:
+
+-   FireplaceQu
+-   Fence
+-   Alley
+-   MiscFeature
+-   PoolQC
+
+```{r}
+library(naniar)
+miss_var_summary(train) %>% 
+  mutate(cum_pct = cumsum(n_miss)/sum(n_miss)) %>%
+  filter(n_miss>0) %>% 
+  paged_table(.)
+```
+
+When we inspect the data description, we quickly see that almost all of this missingness is not true missingness, but rather tied to the way the data was encoded. For example:
+
+-   ***PoolQC***: NA means "No pool"
+-   ***FireplaceQu:*** NA means "No Fireplace"
+-   ***Alley***: NA means "No alley access"
+-   ***Fence***: NA means "No fence"
+-   ***MiscFeature***: NA means "None"
+-   ***GarageType, GarageFinish, GarageQual, GarageCond***: NA means "No garage"
+-   ***BasmtQual, BsmtCond, BsmtFinType1, BsmtFinType2***: NA means "No basement"
+
+```{r}
+correct_NA = function(data) {
+  col_list <- list()
+  col_list[["PoolQC"]] <- "No pool"
+  col_list[["FireplaceQu"]] <- "No fireplace"
+  col_list[["Alley"]] <- "No alley"
+  col_list[["Fence"]] <- "Fence"
+  col_list[["MiscFeature"]] <- "None"
+  for (col in c("GarageType","GarageFinish","GarageQual","GarageCond")) {
+    col_list[[col]] <- "No garage"
+  }
+  for (col in c("BsmtQual","BsmtCond", "BsmtFinType1", "BsmtFinType2", "BsmtExposure")) {
+    col_list[[col]] <- "No basement"
+  }
+  col_list[["LotFrontage"]] <- 0
+  col_list[["GarageYrBlt"]] <- 0
+  
+  data %>% 
+    replace_na(col_list) %>% 
+    return(.)
+}
+train2 <- correct_NA(train) 
+```
+
+After making these adjustments, we see that the true missingness is actually quite limited (\~0.1% of the sample).
+
+```{r}
+train2 %>%
+  miss_var_summary(.) %>%
+  filter(n_miss >0) %>% 
+  paged_table(.)
+```
+
+In theory, our tree-based algorithms may handle this directly, with minimal loss of generality. Unfortunately, when we run the same adjustment scheme on the test set, we find there is significantly more missingness (0.04%), including on several variables (e.g. MSZoning) that show no missingness in the train set.
+
+```{r}
+test2 <- correct_NA(test) 
+test2 %>% 
+  miss_var_summary(.) %>%
+  filter(n_miss >0) %>% 
+  paged_table(.)
+```
+
+To address this, we will use the `missForest` package, which implements random forest imputation in R. Its main advantage over its Python equivalent is that it handles categorical variables directly without the need to use oneHotEncoder or other dummification schemes. To use this package, we first need to convert our categorical variables into factors. After inspecting
