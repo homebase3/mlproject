@@ -61,7 +61,7 @@ Let's tackle missingess first.
 
 ### Missingness
 
-In the table below, we see missingness in \~1/4 (19/80) explanatory variables. \~90% of this missingness comes from 5 variables:
+In the table below, we see missingness in \~1/4 (19/79) explanatory variables. \~90% of this missingness comes from 5 variables:
 
 -   FireplaceQu
 -   Fence
@@ -222,7 +222,41 @@ We must first split our train set into a train and test sets to prevent overtrai
 ```{python}
 from sklearn.model_selection import train_test_split
 X = r.train4.iloc[:,1:-1] #dropping ID variable
+X_hot = X
 y = r.train4.iloc[:,-1:]
+```
+
+### Feature selection
+
+Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
+
+### XGBoost
+
+```{python, cache = TRUE}
+from sklearn.model_selection import cross_val_score
+from sklearn.preprocessing import OneHotEncoder, QuantileTransformer, quantile_transform
+from sklearn.compose import TransformedTargetRegressor
+import xgboost as xgb
+from boruta import BorutaPy
+import numpy as np
+import pandas as pd
+
+# X_hot = OneHotEncoder().fit_transform(X).toarray() #need to do encode categorical variables for XGBoost
+# 
+# xgb_model = xgb.XGBRegressor(tree_method = "hist", max_depth = 3)
+# trans_model = TransformedTargetRegressor(regressor = xgb_model, transformer = QuantileTransformer())
+br = BoostARoota(metric = "rmse")
+X_xgb = pd.get_dummies(X)
+y_trans = quantile_transform(r.train4.iloc[:,-1:])
+br.fit(X_xgb,y_trans)
+br.transform(X_xgb)
+```
+
+This variable selection returns \~40% of the total dummified variables. Interestingly though,
+
+```{python, cache = TRUE}
+len(br.keep_vars_)
+len(np.unique([i.split("_")[0] for i in br.keep_vars_]))
 ```
 
 ### Hyperparameter tuning
@@ -231,24 +265,9 @@ Because of the computational complexity involved in tuning, we will use the \`op
 
 1.  Load relevant packages
 2.  Initialize regressors
-3.  Pass regressor to Boruta
-4.  Set ranges for hyperparameters
-5.  Set up cross-validation scoring
-6.  Functionalize steps 1-5 and pass to Optuna
-7.  Get best parameters for each model from Optuna
+3.  Set ranges for hyperparameters
+4.  Set up cross-validation scoring
+5.  Functionalize steps 1-5 and pass to Optuna
+6.  Get best parameters for each model from Optuna
 
-#### XGBoost
-
-```{python}
-from sklearn.model_selection import cross_val_score
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.compose import TransformedTargetRegressor
-import xgboost as xgb
-from boruta import BorutaPy
-
-OneHotEncoder().fit_transform(X) #need to do encode categorical variables for XGBoost
-
-xgb_model = xgb.XGBRegressor(random_state=42)
-feat_selector = BorutaPy(xgb_model, n_estimators='auto', verbose=2, random_state=1)
-transformed_selector = TransformedTargetRegressor(regressor = feat_selector, transformer = Qu )
-```
+Once we set hyperparameters, we will then run Boruta to help with feature selection
