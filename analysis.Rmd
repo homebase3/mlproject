@@ -20,6 +20,9 @@ library(reticulate)
 # set knitr
 knitr::opts_chunk$set(echo = TRUE)
 knitr::knit_engines$set(python = reticulate::eng_python)
+
+#set options
+options(stringsAsFactors = TRUE)
 ```
 
 # Introduction
@@ -102,7 +105,7 @@ correct_NA = function(data) {
   col_list[["GarageYrBlt"]] <- 0
   
   data %>% 
-    replace_na(col_list) %>% 
+    tidyr::replace_na(col_list) %>%
     return(.)
 }
 train2 <- correct_NA(train) 
@@ -127,4 +130,125 @@ test2 %>%
   paged_table(.)
 ```
 
-To address this, we will use the `missForest` package, which implements random forest imputation in R. Its main advantage over its Python equivalent is that it handles categorical variables directly without the need to use oneHotEncoder or other dummification schemes. To use this package, we first need to convert our categorical variables into factors. After inspecting
+To address this, we will use the `missForest` package, which implements random forest imputation in R. Its main advantage over its Python equivalent is that it handles categorical variables directly without the need to use oneHotEncoder or other dummification schemes. To use this package, we first need to convert our categorical variables into factors. We also need to ensure that our numerical variables are not just numerically encoded factors. After inspecting the `data_description.txt`, we perform the conversion below.
+
+```{r}
+factor_conversion <- function(data) {
+  data %>% 
+    mutate_at(vars(MSSubClass), as.character) %>% 
+    mutate(across(where(is.character), as.factor))  %>% 
+    as.data.frame(.) %>% 
+    return(.)
+}
+train3 <- factor_conversion(train2)
+test3 <- factor_conversion(test2)
+```
+
+Then we perform the imputation.
+
+```{r cache=TRUE, message=FALSE, warning = FALSE, results = 'hide'}
+library(missForest)
+library(doParallel)
+registerDoParallel(cores=6)
+miss_train <- missForest(train3, parallelize = 'forests') 
+train4 <- miss_train$ximp
+miss_test <- missForest(test3, parallelize = 'forests')
+test4 <- miss_test$ximp
+```
+
+We note that while the OOB error is very small in both cases, it is much larger in the test set than the train set:
+
+```{r}
+bind_rows(miss_train$OOBerror,miss_test$OOBerror) %>% 
+  bind_cols(data.frame(Dataset = c("Train","Test")),.) %>% 
+  paged_table()
+```
+
+### Multicollinearity
+
+Given there are 80 explanatory variables in the dataset, it is unsurprising that multicollinearity is a signficiant concern. To size the issue, we must first define correlation in the context of a mix of categorical and numerical variables. We do so by leveraging the `GoodmanKruskal` package, which implements Goodman and Kruskal's tau measure. The tau measure is a association statistic that allows for (1) all variable types and (2) asymmetric relationships. It represents the proportion of variation in one variable that can be explained by another. Below is the cumulative distribution of tau measure across variable pairs:
+
+```{r, cache = TRUE}
+library(mltools)
+library(GoodmanKruskal)
+gktau <- train4 %>% 
+  GKtauDataframe(.)
+gkvec <- gktau %>% as.vector(.)
+gkcdf <- gkvec[gkvec <= 1] %>% 
+  empirical_cdf(.,ubounds=seq(0, 1, by=0.001)) 
+plot_ly(x = ~gkcdf$UpperBound, y = ~gkcdf$CDF, type = 'scatter', mode = 'lines', fill = 'tozeroy') %>% 
+   layout(xaxis = list(title = 'Goodman-Kruskal tau'),
+         yaxis = list(title = 'Percent of variable relationships'))
+```
+
+As it turns out, multicollinearity is not as big of an issue here as would be feared. Only 33% of variable pairs explain more than 5% of the variation in one another. And only 17% of variable pairs explain more than 20% of the variance in one another.
+
+To confirm this finding with a more intuitive association measure, let's consider the distribution of Pearson correlation coefficients among the numeric variables. Below is the analogous cumulative distribution plot:
+
+```{r, cache = TRUE}
+pears_vec <- lsr::correlate(train4) %>% 
+  .$correlation %>% 
+  as.vector(.) %>% 
+  na.omit(.) %>% 
+  abs(.)
+pears_cdf <- pears_vec[pears_vec <= 1] %>% 
+  empirical_cdf(.,ubounds=seq(0, 1, by=0.001))
+
+plot_ly(x = ~pears_cdf$UpperBound, y = ~pears_cdf$CDF, type = 'scatter', mode = 'lines', fill = 'tozeroy') %>% 
+   layout(xaxis = list(title = 'Absolute value of Pearson correlation coefficient'),
+         yaxis = list(title = 'Percent of variable relationships'))
+```
+
+Only 25% of numerical variable pairs have a Pearson correlation coefficient \> 0.2.
+
+This bodes well for the accuracy of our predictions, but likely means we will need to consider many variables in our model. In other words, features selection is likely to be particularly challenging. Rather than perform this in a separate step, this paper implements the [Boruta algorithm](https://towardsdatascience.com/boruta-explained-the-way-i-wish-someone-explained-it-to-me-4489d70e154a) to help automate feature selection within the larger model training process. That said, which features drive housing prices is a core insight of this paper, one that we'll return to after we fit our models.
+
+### Target normality
+
+While tree-based models can handle asymmetric target variables, transforming these variable can make models more accurate, especially in this case. The reason: our model will be evaluated on RMSE, so the long tail we are worried about (high-priced homes) are likely to have an outsize impact on the overall error figure. In this paper, we'll apply a `QuantileTransformer` using the `TransformedTargetRegressor` found in Scikit-learn.
+
+## Model training
+
+We are finally ready to train our model. We'll be applying three tree-based models:
+
+-   ***XGBoost***: the classic Kaggle competition boosting algorithm
+-   ***LightGBM***: Microsoft's gradient boosting algorithm known for its speed
+-   ***CatBoost***: Yandex's offering known for its ability to seamlessly address categorical variables
+
+### Dataset preparation
+
+We must first split our train set into a train and test sets to prevent overtraining.
+
+```{python}
+from sklearn.model_selection import train_test_split
+X = r.train4.iloc[:,1:-1] #dropping ID variable
+y = r.train4.iloc[:,-1:]
+```
+
+### Hyperparameter tuning
+
+Because of the computational complexity involved in tuning, we will use the \`optuna\` package to aid in our search. For each model, we will follow the following steps:
+
+1.  Load relevant packages
+2.  Initialize regressors
+3.  Pass regressor to Boruta
+4.  Set ranges for hyperparameters
+5.  Set up cross-validation scoring
+6.  Functionalize steps 1-5 and pass to Optuna
+7.  Get best parameters for each model from Optuna
+
+#### XGBoost
+
+```{python}
+from sklearn.model_selection import cross_val_score
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import TransformedTargetRegressor
+import xgboost as xgb
+from boruta import BorutaPy
+
+OneHotEncoder().fit_transform(X) #need to do encode categorical variables for XGBoost
+
+xgb_model = xgb.XGBRegressor(random_state=42)
+feat_selector = BorutaPy(xgb_model, n_estimators='auto', verbose=2, random_state=1)
+transformed_selector = TransformedTargetRegressor(regressor = feat_selector, transformer = Qu )
+```
