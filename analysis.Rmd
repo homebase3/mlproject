@@ -205,7 +205,18 @@ This bodes well for the accuracy of our predictions, but likely means we will ne
 
 ### Target normality
 
-While tree-based models can handle asymmetric target variables, transforming these variable can make models more accurate, especially in this case. The reason: our model will be evaluated on RMSE, so the long tail we are worried about (high-priced homes) are likely to have an outsize impact on the overall error figure. In this paper, we'll apply a `QuantileTransformer` using the `TransformedTargetRegressor` found in Scikit-learn.
+While tree-based models can handle asymmetric target variables, transforming these variable can make models more accurate, especially in this case. The reason: our model will be evaluated on RMSE, so the long tail we are worried about (high-priced homes) are likely to have an outsize impact on the overall error figure. In this paper, we'll apply a log transformation using the `TransformedTargetRegressor` found in Scikit-learn. Upon inspection below, we can see that this produces a reasonably well-distributed variable without invoking more complex transformations like the quantile.
+
+```{r}
+
+density <- density(log(train4$SalePrice))
+
+fig <- plot_ly(x = ~density$x, y = ~density$y, type = 'scatter', mode = 'lines', fill = 'tozeroy')
+fig <- fig %>% layout(xaxis = list(title = 'Log SalePrice'),
+         yaxis = list(title = 'Density'))
+
+fig
+```
 
 ## Model training
 
@@ -217,23 +228,21 @@ We are finally ready to train our model. We'll be applying three tree-based mode
 
 ### Dataset preparation
 
-We must first split our train set into a train and test sets to prevent overtraining.
+We must build our explanatory and target matrices in Python.
 
 ```{python}
+import numpy as np
 from sklearn.preprocessing import quantile_transform
 X = r.train4.iloc[:,1:-1] #dropping ID variable
 y = r.train4.iloc[:,-1:]
-y_transformed = quantile_transform(y)
+y_transformed = np.log1p(y)
 ```
 
 ### Feature selection
 
 Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package called `BoostaRoota` that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
 
-### XGBoost
-
 ```{python, cache = TRUE}
-import numpy as np
 import pandas as pd
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import OneHotEncoder, QuantileTransformer, quantile_transform
@@ -243,23 +252,39 @@ from boostaroota import BoostARoota
 br = BoostARoota(metric = "rmse")
 X_xgb = pd.get_dummies(X)
 br.fit(X_xgb,y_transformed)
-br.transform(X_xgb)
 ```
 
-This variable selection returns \~40% of the total dummified variables. Interestingly though, \>85% of the underlying variables are included. In effect, most of the dimensionality reduction comes from reducing dummified options of categorical variables.
+This variable selection returns \~16% of the total dummified variables. Interestingly though, \~% of the underlying variables are included. In effect, most of the dimensionality reduction comes from reducing dummified options of categorical variables.
 
 ```{python, cache = TRUE}
+br.transform(X_xgb)
 len(br.keep_vars_)
 new_vars = np.unique([i.split("_")[0] for i in br.keep_vars_])
 X_cat = X[new_vars]
 len(new_vars)
 ```
 
-Below are the variables we were able to fully eliminate:
+Below are the variables we are keeping at least partially:
 
 ```{python}
-list(set(X.columns.values).difference(set(new_vars)))
+list(new_vars)
 ```
+
+And here are the variables we are eliminating:
+
+```{python}
+lst = list(set(X.columns.values).difference(set(new_vars)))
+lst.sort()
+lst
+```
+
+The major trends here are:
+
+-   For characteristics represented multiple variables (e.g. basements), the model tends to keep only the core subset of the variables (e.g. BsmtCond, BsmtQual) while throwing out more ancillary variables (e.g. BsmtHalfBath)
+
+-   Foundational aspects of the home (e.g. utilities, foundation, roofing) tend to be thrown out, whereas more visual features (e.g. Lot area, fencing, fireplaces, bedroom counts, age) tend to be included.
+
+-   There are some notable exceptions to the rule (e.g. KitchenQual and PoolQual) that might make some homeowners think twice about renovations
 
 The list includes some obvious entries (e.g. Street), but some very insightful ones (e.g. Pool metrics, roofing, heating, and electrical). We will return to the feature importance discussion after running our models.
 
@@ -269,44 +294,119 @@ Now, we will tune our models, paying particular attention to the risk of overfit
 
 #### XGBoost
 
+For XGBoost, we use an approach inspired by [this kaggle post](https://www.kaggle.com/hamzaghanmi/xgboost-hyperparameter-tuning-using-optuna) with parameter choices ranges adapted from [this article](https://aetperf.github.io/2021/02/16/Optuna-+-XGBoost-on-a-tabular-dataset.html). Rather than using cross_val_score, we integrate the train_test_split directly into the objective function. The traditional cross_val_score approach tends to produce errors
+
 ```{python, cache = TRUE}
 from xgboost import XGBRegressor
 import optuna
-from sklearn.preprocessing import QuantileTransformer
+from sklearn.metrics import mean_squared_error
 from sklearn.compose import TransformedTargetRegressor
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import train_test_split
+
 def objective(trial):
+  train_X, test_X, train_y, test_y = train_test_split(X_xgb, y, test_size=0.2,random_state=42)
   params = {
-    "verbosity": 2,  # 0 (silent) - 3 (debug)
-    # "objective": "reg:squarederror",
-    "n_estimators": 10000,
-    "max_depth": trial.suggest_int("max_depth", 4, 20),
-    "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
-    "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
-    "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
-    "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
-    "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
-    "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
-    "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
-    "random_state": 42,
-    "n_jobs": 6 
-    }
-  fit_params = {
-    'callbacks': [optuna.integration.XGBoostPruningCallback(trial, "validation-rmse")]
+  "verbosity": 0,  # 0 (silent) - 3 (debug)
+  # "objective": "reg:squarederror",
+  "n_estimators": 10000,
+  "max_depth": trial.suggest_int("max_depth", 4, 20),
+  "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
+  "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
+  "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
+  "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
+  "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+  "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+  "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
+  "random_state": 42
   }
   xgb_model = xgb.XGBRegressor(**params)
   transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
- 
-  cv_score = cross_val_score(estimator = transformed_xgb_model, X = X_xgb, y = y, cv = 5, scoring = 'neg_root_mean_squared_error', fit_params = fit_params, verbose = False)
-  return np.mean(cv_score)
+  transformed_xgb_model.fit(train_X,train_y, eval_set=[(test_X,test_y)],early_stopping_rounds=100,verbose=False)
+  
+  preds = transformed_xgb_model.predict(test_X)
+  rmse = mean_squared_error(test_y, preds,squared=False)
+    
+  return rmse
 
-study = optuna.create_study(direction='maximize')
-study.optimize(objective, n_trials=100)
+study1 = optuna.create_study(direction='minimize')
+study1.optimize(objective, n_trials=2)
+```
+
+Here are our parameters for the xgboost regression, which we will use again in the next section.
+
+```{python}
+study1.best_params
+```
+
+### Light GBM regression
+
+```{python}
+from xgboost import XGBRegressor
+import optuna
+from sklearn.metrics import mean_squared_error
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.model_selection import train_test_split
+
+def objective(trial):
+  train_X, test_X, train_y, test_y = train_test_split(X_xgb, y, test_size=0.2,random_state=42)
+  params = {
+  "verbosity": 0,  # 0 (silent) - 3 (debug)
+  # "objective": "reg:squarederror",
+  "n_estimators": 10000,
+  "max_depth": trial.suggest_int("max_depth", 4, 20),
+  "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
+  "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
+  "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
+  "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
+  "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+  "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+  "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
+  "random_state": 42
+  }
+  xgb_model = xgb.XGBRegressor(**params)
+  transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
+  transformed_xgb_model.fit(train_X,train_y, eval_set=[(test_X,test_y)], callbacks = []
+  preds = transformed_xgb_model.predict(test_X)
+  rmse = mean_squared_error(test_y, preds,squared=False)
+    
+  return rmse
+
+study1 = optuna.create_study(direction='minimize')
+study1.optimize(objective, n_trials=100)
 ```
 
 ```{python}
-xgb_model = xgb.XGBRegressor()
-transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
-xgb_model.fit(X_xgb,y)
-cross_val_score(xgb_model,X_xgb,y,cv=5,scoring = 'neg_root_mean_squared_error')
+import lightgbm as lgb
+def objective(trial):
+   train_X, test_X, train_y, test_y = train_test_split(X_xgb, y, test_size=0.2,random_state=42)
+  params = {
+    'learning_rate': trial.suggest_loguniform('learning_rate',0.01, 1.0),
+    'num_leaves': trial.suggest_loguniform('num_leaves',24, 80),
+    'feature_fraction': trial.suggest_uniform('feature_fraction',0.1, 0.9),
+                                            'bagging_fraction': (0.8, 1),
+                                            'max_depth': (5, 30),
+                                            'max_bin':(20,90),
+                                            'min_data_in_leaf': (20, 80),
+                                            'min_sum_hessian_in_leaf':(0,100),
+                                           'subsample': (0.01, 1.0)}, random_state=200)
+  "verbosity": 0,  # 0 (silent) - 3 (debug)
+  # "objective": "reg:squarederror",
+  "n_estimators": 10000,
+  "max_depth": trial.suggest_int("max_depth", 4, 20),
+  "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
+  "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
+  "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
+  "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
+  "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+  "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+  "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
+  "random_state": 42
+  }
+  xgb_model = xgb.XGBRegressor(**params)
+  transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
+  transformed_xgb_model.fit(train_X,train_y, eval_set=[(test_X,test_y)], callbacks = []
+  preds = transformed_xgb_model.predict(test_X)
+  rmse = mean_squared_error(test_y, preds,squared=False)
+    
+  return rmse
 ```
