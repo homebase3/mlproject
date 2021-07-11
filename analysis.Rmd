@@ -278,7 +278,7 @@ from sklearn.model_selection import cross_val_score
 def objective(trial):
   params = {
     "verbosity": 2,  # 0 (silent) - 3 (debug)
-    "objective": "reg:squarederror",
+    # "objective": "reg:squarederror",
     "n_estimators": 10000,
     "max_depth": trial.suggest_int("max_depth", 4, 20),
     "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
@@ -291,15 +291,22 @@ def objective(trial):
     "random_state": 42,
     "n_jobs": 6 
     }
-  xgb_model = xgb.XGBRegressor(**param)
-  transformed_xbg_model = TransformedTargetRegressor(regressor = xgb_model, transformer = QuantileTransformer)
   fit_params = {
-      'early_stopping_rounds': 100, 
-      'eval_metric': 'rmse',
-      'verbose': False
-      }
-  cv_score = cross_val_score(transformed_xgb_model, cv = 5, scoring = neg_root_mean_squared_error, fit_params = fit_params)
-  return cv_score
+    'callbacks': [optuna.integration.XGBoostPruningCallback(trial, "validation-rmse")]
+  }
+  xgb_model = xgb.XGBRegressor(**params)
+  transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
+ 
+  cv_score = cross_val_score(estimator = transformed_xgb_model, X = X_xgb, y = y, cv = 5, scoring = 'neg_root_mean_squared_error', fit_params = fit_params, verbose = False)
+  return np.mean(cv_score)
+
 study = optuna.create_study(direction='maximize')
 study.optimize(objective, n_trials=100)
+```
+
+```{python}
+xgb_model = xgb.XGBRegressor()
+transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
+xgb_model.fit(X_xgb,y)
+cross_val_score(xgb_model,X_xgb,y,cv=5,scoring = 'neg_root_mean_squared_error')
 ```
