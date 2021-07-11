@@ -222,7 +222,6 @@ We must first split our train set into a train and test sets to prevent overtrai
 ```{python}
 from sklearn.model_selection import train_test_split
 X = r.train4.iloc[:,1:-1] #dropping ID variable
-X_hot = X
 y = r.train4.iloc[:,-1:]
 ```
 
@@ -233,30 +232,39 @@ Because hyperparameter tuning and other model steps are very computationally inv
 ### XGBoost
 
 ```{python, cache = TRUE}
+import numpy as np
+import pandas as pd
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import OneHotEncoder, QuantileTransformer, quantile_transform
 from sklearn.compose import TransformedTargetRegressor
 import xgboost as xgb
-from boruta import BorutaPy
-import numpy as np
-import pandas as pd
+from boostaroota import BoostARoota
 
-# X_hot = OneHotEncoder().fit_transform(X).toarray() #need to do encode categorical variables for XGBoost
-# 
-# xgb_model = xgb.XGBRegressor(tree_method = "hist", max_depth = 3)
-# trans_model = TransformedTargetRegressor(regressor = xgb_model, transformer = QuantileTransformer())
 br = BoostARoota(metric = "rmse")
 X_xgb = pd.get_dummies(X)
-y_trans = quantile_transform(r.train4.iloc[:,-1:])
-br.fit(X_xgb,y_trans)
+y_transformed = quantile_transform(y)
+br.fit(X_xgb,y_transformed)
 br.transform(X_xgb)
 ```
 
-This variable selection returns \~40% of the total dummified variables. Interestingly though,
+This variable selection returns \~40% of the total dummified variables. Interestingly though, \>85% of the underlying variables are included. In effect, most of the dimensionality reduction comes from reducing dummified options of categorical variables.
 
 ```{python, cache = TRUE}
 len(br.keep_vars_)
 len(np.unique([i.split("_")[0] for i in br.keep_vars_]))
+```
+
+```{python}
+from catboost import CatBoostRegressor
+from boostaroota import BoostARoota
+X_cat = X
+X_cat["MSSubClass"] = str(X_cat.MSSubClass)
+br2 = BoostARoota(clf = CatBoostRegressor(random_state = 42, eval_metric = "RMSE", verbose=True))
+br2.fit(X_cat,y_transformed)
+```
+
+```{python}
+len(br2.keep_vars_)
 ```
 
 ### Hyperparameter tuning
