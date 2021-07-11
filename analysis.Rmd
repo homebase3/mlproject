@@ -135,7 +135,7 @@ To address this, we will use the `missForest` package, which implements random f
 ```{r}
 factor_conversion <- function(data) {
   data %>% 
-    mutate_at(vars(MSSubClass), as.character) %>% 
+    mutate_at(vars(MSSubClass), ~paste0(as.character(.),"v")) %>% 
     mutate(across(where(is.character), as.factor))  %>% 
     as.data.frame(.) %>% 
     return(.)
@@ -220,14 +220,15 @@ We are finally ready to train our model. We'll be applying three tree-based mode
 We must first split our train set into a train and test sets to prevent overtraining.
 
 ```{python}
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import quantile_transform
 X = r.train4.iloc[:,1:-1] #dropping ID variable
 y = r.train4.iloc[:,-1:]
+y_transformed = quantile_transform(y)
 ```
 
 ### Feature selection
 
-Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
+Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package called `BoostaRoota` that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
 
 ### XGBoost
 
@@ -236,13 +237,11 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import OneHotEncoder, QuantileTransformer, quantile_transform
-from sklearn.compose import TransformedTargetRegressor
 import xgboost as xgb
 from boostaroota import BoostARoota
 
 br = BoostARoota(metric = "rmse")
 X_xgb = pd.get_dummies(X)
-y_transformed = quantile_transform(y)
 br.fit(X_xgb,y_transformed)
 br.transform(X_xgb)
 ```
@@ -251,31 +250,56 @@ This variable selection returns \~40% of the total dummified variables. Interest
 
 ```{python, cache = TRUE}
 len(br.keep_vars_)
-len(np.unique([i.split("_")[0] for i in br.keep_vars_]))
+new_vars = np.unique([i.split("_")[0] for i in br.keep_vars_])
+X_cat = X[new_vars]
+len(new_vars)
 ```
 
-```{python}
-from catboost import CatBoostRegressor
-from boostaroota import BoostARoota
-X_cat = X
-X_cat["MSSubClass"] = str(X_cat.MSSubClass)
-br2 = BoostARoota(clf = CatBoostRegressor(random_state = 42, eval_metric = "RMSE", verbose=True))
-br2.fit(X_cat,y_transformed)
-```
+Below are the variables we were able to fully eliminate:
 
 ```{python}
-len(br2.keep_vars_)
+list(set(X.columns.values).difference(set(new_vars)))
 ```
+
+The list includes some obvious entries (e.g. Street), but some very insightful ones (e.g. Pool metrics, roofing, heating, and electrical). We will return to the feature importance discussion after running our models.
 
 ### Hyperparameter tuning
 
-Because of the computational complexity involved in tuning, we will use the \`optuna\` package to aid in our search. For each model, we will follow the following steps:
+Now, we will tune our models, paying particular attention to the risk of overfitting. Because of the complexity and continuity of the search space for tree-based model parameters, we'll use `Optuna` to help us reach optimal parameters faster.
 
-1.  Load relevant packages
-2.  Initialize regressors
-3.  Set ranges for hyperparameters
-4.  Set up cross-validation scoring
-5.  Functionalize steps 1-5 and pass to Optuna
-6.  Get best parameters for each model from Optuna
+#### XGBoost
 
-Once we set hyperparameters, we will then run Boruta to help with feature selection
+```{python, cache = TRUE}
+from xgboost import XGBRegressor
+import optuna
+from sklearn.preprocessing import QuantileTransformer
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.model_selection import cross_val_score
+def objective(trial):
+  params = {
+    "verbosity": 2,  # 0 (silent) - 3 (debug)
+    "objective": "reg:squarederror",
+    "n_estimators": 10000,
+    "max_depth": trial.suggest_int("max_depth", 4, 20),
+    "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
+    "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
+    "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
+    "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
+    "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+    "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
+    "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
+    "random_state": 42,
+    "n_jobs": 6 
+    }
+  xgb_model = xgb.XGBRegressor(**param)
+  transformed_xbg_model = TransformedTargetRegressor(regressor = xgb_model, transformer = QuantileTransformer)
+  fit_params = {
+      'early_stopping_rounds': 100, 
+      'eval_metric': 'rmse',
+      'verbose': False
+      }
+  cv_score = cross_val_score(transformed_xgb_model, cv = 5, scoring = neg_root_mean_squared_error, fit_params = fit_params)
+  return cv_score
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)
+```
