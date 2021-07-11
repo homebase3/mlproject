@@ -49,7 +49,7 @@ fig <- fig %>% layout(xaxis = list(title = 'SalePrice'),
 fig
 ```
 
-## Dataset preparation
+# Dataset preparation
 
 There are three main issues that need to be addressed before we can train our ML models:
 
@@ -59,7 +59,7 @@ There are three main issues that need to be addressed before we can train our ML
 
 Let's tackle missingess first.
 
-### Missingness
+## Missingness
 
 In the table below, we see missingness in \~1/4 (19/79) explanatory variables. \~90% of this missingness comes from 5 variables:
 
@@ -164,7 +164,7 @@ bind_rows(miss_train$OOBerror,miss_test$OOBerror) %>%
   paged_table()
 ```
 
-### Multicollinearity
+## Multicollinearity
 
 Given there are 80 explanatory variables in the dataset, it is unsurprising that multicollinearity is a signficiant concern. To size the issue, we must first define correlation in the context of a mix of categorical and numerical variables. We do so by leveraging the `GoodmanKruskal` package, which implements Goodman and Kruskal's tau measure. The tau measure is a association statistic that allows for (1) all variable types and (2) asymmetric relationships. It represents the proportion of variation in one variable that can be explained by another. Below is the cumulative distribution of tau measure across variable pairs:
 
@@ -203,7 +203,7 @@ Only 25% of numerical variable pairs have a Pearson correlation coefficient \> 0
 
 This bodes well for the accuracy of our predictions, but likely means we will need to consider many variables in our model. In other words, features selection is likely to be particularly challenging. Rather than perform this in a separate step, this paper implements the [Boruta algorithm](https://towardsdatascience.com/boruta-explained-the-way-i-wish-someone-explained-it-to-me-4489d70e154a) to help automate feature selection within the larger model training process. That said, which features drive housing prices is a core insight of this paper, one that we'll return to after we fit our models.
 
-### Target normality
+## Target normality
 
 While tree-based models can handle asymmetric target variables, transforming these variable can make models more accurate, especially in this case. The reason: our model will be evaluated on RMSE, so the long tail we are worried about (high-priced homes) are likely to have an outsize impact on the overall error figure. In this paper, we'll apply a log transformation using the `TransformedTargetRegressor` found in Scikit-learn. Upon inspection below, we can see that this produces a reasonably well-distributed variable without invoking more complex transformations like the quantile.
 
@@ -218,7 +218,7 @@ fig <- fig %>% layout(xaxis = list(title = 'Log SalePrice'),
 fig
 ```
 
-## Model training
+# Model training
 
 We are finally ready to train our model. We'll be applying three tree-based models:
 
@@ -226,7 +226,7 @@ We are finally ready to train our model. We'll be applying three tree-based mode
 -   ***LightGBM***: Microsoft's gradient boosting algorithm known for its speed
 -   ***CatBoost***: Yandex's offering known for its ability to seamlessly address categorical variables
 
-### Dataset preparation
+## Dataset preparation
 
 We must build our explanatory and target matrices in Python.
 
@@ -238,7 +238,7 @@ y = r.train4.iloc[:,-1:]
 y_transformed = np.log1p(y)
 ```
 
-### Feature selection
+## Feature selection
 
 Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package called `BoostaRoota` that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
 
@@ -288,15 +288,15 @@ The major trends here are:
 
 The list includes some obvious entries (e.g. Street), but some very insightful ones (e.g. Pool metrics, roofing, heating, and electrical). We will return to the feature importance discussion after running our models.
 
-### Hyperparameter tuning
+## Hyperparameter tuning
 
 Now, we will tune our models, paying particular attention to the risk of overfitting. Because of the complexity and continuity of the search space for tree-based model parameters, we'll use `Optuna` to help us reach optimal parameters faster.
 
-#### XGBoost
+### XGBoost
 
 For XGBoost, we use an approach inspired by [this kaggle post](https://www.kaggle.com/hamzaghanmi/xgboost-hyperparameter-tuning-using-optuna) with parameter choices ranges adapted from [this article](https://aetperf.github.io/2021/02/16/Optuna-+-XGBoost-on-a-tabular-dataset.html). Rather than using cross_val_score, we integrate the train_test_split directly into the objective function. The traditional cross_val_score approach tends to produce errors
 
-```{python, cache = TRUE}
+```{python, cache = TRUE, results = 'hide'}}
 from xgboost import XGBRegressor
 import optuna
 from sklearn.metrics import mean_squared_error
@@ -340,73 +340,45 @@ study1.best_params
 
 ### Light GBM regression
 
-```{python}
-from xgboost import XGBRegressor
-import optuna
-from sklearn.metrics import mean_squared_error
-from sklearn.compose import TransformedTargetRegressor
-from sklearn.model_selection import train_test_split
+For LightGBM, we leverage the same approach above, using hyperparameter ranges adapted from [this kaggle post](https://www.kaggle.com/somang1418/tuning-hyperparameters-under-10-minutes-lgbm).
 
-def objective(trial):
-  train_X, test_X, train_y, test_y = train_test_split(X_xgb, y, test_size=0.2,random_state=42)
-  params = {
-  "verbosity": 0,  # 0 (silent) - 3 (debug)
-  # "objective": "reg:squarederror",
-  "n_estimators": 10000,
-  "max_depth": trial.suggest_int("max_depth", 4, 20),
-  "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
-  "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
-  "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
-  "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
-  "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
-  "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
-  "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
-  "random_state": 42
-  }
-  xgb_model = xgb.XGBRegressor(**params)
-  transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
-  transformed_xgb_model.fit(train_X,train_y, eval_set=[(test_X,test_y)], callbacks = []
-  preds = transformed_xgb_model.predict(test_X)
-  rmse = mean_squared_error(test_y, preds,squared=False)
-    
-  return rmse
-
-study1 = optuna.create_study(direction='minimize')
-study1.optimize(objective, n_trials=100)
-```
-
-```{python}
+```{python, cache = TRUE, results = 'hide'}}
 import lightgbm as lgb
 def objective(trial):
-   train_X, test_X, train_y, test_y = train_test_split(X_xgb, y, test_size=0.2,random_state=42)
+  train_X, test_X, train_y, test_y = train_test_split(X_cat, y, test_size=0.2,random_state=42)
   params = {
     'learning_rate': trial.suggest_loguniform('learning_rate',0.01, 1.0),
-    'num_leaves': trial.suggest_loguniform('num_leaves',24, 80),
+    'num_leaves': trial.suggest_int('num_leaves',24, 80),
     'feature_fraction': trial.suggest_uniform('feature_fraction',0.1, 0.9),
-                                            'bagging_fraction': (0.8, 1),
-                                            'max_depth': (5, 30),
-                                            'max_bin':(20,90),
-                                            'min_data_in_leaf': (20, 80),
-                                            'min_sum_hessian_in_leaf':(0,100),
-                                           'subsample': (0.01, 1.0)}, random_state=200)
-  "verbosity": 0,  # 0 (silent) - 3 (debug)
-  # "objective": "reg:squarederror",
-  "n_estimators": 10000,
-  "max_depth": trial.suggest_int("max_depth", 4, 20),
-  "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
-  "colsample_bytree": trial.suggest_loguniform("colsample_bytree", 0.2, 0.6),
-  "subsample": trial.suggest_loguniform("subsample", 0.4, 0.8),
-  "alpha": trial.suggest_loguniform("alpha", 0.01, 10.0),
-  "lambda": trial.suggest_loguniform("lambda", 1e-8, 10.0),
-  "gamma": trial.suggest_loguniform("lambda", 1e-8, 10.0),
-  "min_child_weight": trial.suggest_loguniform("min_child_weight", 10, 1000),
-  "random_state": 42
-  }
-  xgb_model = xgb.XGBRegressor(**params)
-  transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
-  transformed_xgb_model.fit(train_X,train_y, eval_set=[(test_X,test_y)], callbacks = []
-  preds = transformed_xgb_model.predict(test_X)
+    'bagging_fraction': trial.suggest_uniform('bagging_fraction',0.8, 1),
+    'max_depth': trial.suggest_int('max_depth',5, 30),
+    'max_bin':trial.suggest_int('max_bin',20,90),
+    'min_data_in_leaf': trial.suggest_int('min_data_in_leaf',20, 80),
+    'min_sum_hessian_in_leaf':trial.suggest_uniform('min_sum_hessian_in_leaf',0,100),
+    'subsample': trial.suggest_uniform('subsample',0.01, 1.0),
+    'random_state': 42,
+    'metric': 'rmse',
+    'application':'regression'
+    }
+  lgb_model = lgb.LGBMRegressor(**params)
+  transformed_lgb_model = TransformedTargetRegressor(regressor = lgb_model, func = np.log1p, inverse_func = np.expm1)
+  transformed_lgb_model.fit(train_X,train_y, eval_set=[(test_X,test_y)],early_stopping_rounds=100,verbose=False)
+  preds = transformed_lgb_model.predict(test_X)
   rmse = mean_squared_error(test_y, preds,squared=False)
     
   return rmse
+study2 = optuna.create_study(direction='minimize')
+study2.optimize(objective, n_trials=500)
 ```
+
+Here are our parameters for the LightGBM regression, which we will use again in the next section.
+
+```{python}
+study1.best_params
+```
+
+### CatBoost
+
+CatBoost has hyperparameter tuning built-in, so we will skip to the next section
+
+## Final training
