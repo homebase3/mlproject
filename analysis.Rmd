@@ -18,7 +18,7 @@ library(rmarkdown)
 library(reticulate)
 
 # set knitr
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, autodep = TRUE)
 knitr::knit_engines$set(python = reticulate::eng_python)
 
 #set options
@@ -29,7 +29,7 @@ options(stringsAsFactors = TRUE)
 
 This kaggle competition asks the user to predict housing prices. The core dataset is show below. It carries 80 possible explanatory features for housing prices, split roughly evenly between numerical and categorical variables.
 
-```{r load data, warning=FALSE,message=FALSE}
+```{r load data, cache = TRUE, warning=FALSE,message=FALSE}
 train <- read_csv('data/train.csv')
 test <- read_csv('data/test.csv')
 paged_table(train)
@@ -37,7 +37,7 @@ paged_table(train)
 
 The first thing we notice is that there is a substantial amount of variation is our target variable, with a significant amount of leftward skew. We'll tackle this skew later on.
 
-```{r paged.print=FALSE}
+```{r cache = TRUE}
 library(plotly)
 
 density <- density(train$SalePrice)
@@ -69,7 +69,7 @@ In the table below, we see missingness in \~1/4 (19/79) explanatory variables. \
 -   MiscFeature
 -   PoolQC
 
-```{r}
+```{r, cache = TRUE}
 library(naniar)
 miss_var_summary(train) %>% 
   mutate(cum_pct = cumsum(n_miss)/sum(n_miss)) %>%
@@ -87,7 +87,7 @@ When we inspect the data description, we quickly see that almost all of this mis
 -   ***GarageType, GarageFinish, GarageQual, GarageCond***: NA means "No garage"
 -   ***BasmtQual, BsmtCond, BsmtFinType1, BsmtFinType2***: NA means "No basement"
 
-```{r}
+```{r, cache = TRUE}
 correct_NA = function(data) {
   col_list <- list()
   col_list[["PoolQC"]] <- "No pool"
@@ -113,7 +113,7 @@ train2 <- correct_NA(train)
 
 After making these adjustments, we see that the true missingness is actually quite limited (\~0.1% of the sample).
 
-```{r}
+```{r, cache = TRUE}
 train2 %>%
   miss_var_summary(.) %>%
   filter(n_miss >0) %>% 
@@ -122,7 +122,7 @@ train2 %>%
 
 In theory, our tree-based algorithms may handle this directly, with minimal loss of generality. Unfortunately, when we run the same adjustment scheme on the test set, we find there is significantly more missingness (0.04%), including on several variables (e.g. MSZoning) that show no missingness in the train set.
 
-```{r}
+```{r, cache = TRUE}
 test2 <- correct_NA(test) 
 test2 %>% 
   miss_var_summary(.) %>%
@@ -132,7 +132,7 @@ test2 %>%
 
 To address this, we will use the `missForest` package, which implements random forest imputation in R. Its main advantage over its Python equivalent is that it handles categorical variables directly without the need to use oneHotEncoder or other dummification schemes. To use this package, we first need to convert our categorical variables into factors. We also need to ensure that our numerical variables are not just numerically encoded factors. After inspecting the `data_description.txt`, we perform the conversion below.
 
-```{r}
+```{r, cache = TRUE}
 factor_conversion <- function(data) {
   data %>% 
     mutate_at(vars(MSSubClass), ~paste0(as.character(.),"v")) %>% 
@@ -146,7 +146,7 @@ test3 <- factor_conversion(test2)
 
 Then we perform the imputation.
 
-```{r cache=TRUE, message=FALSE, warning = FALSE, results = 'hide'}
+```{r, cache=TRUE, message=FALSE, warning = FALSE, results = 'hide'}
 library(missForest)
 library(doParallel)
 registerDoParallel(cores=6)
@@ -158,7 +158,7 @@ test4 <- miss_test$ximp
 
 We note that while the OOB error is very small in both cases, it is much larger in the test set than the train set:
 
-```{r}
+```{r, cache = TRUE}
 bind_rows(miss_train$OOBerror,miss_test$OOBerror) %>% 
   bind_cols(data.frame(Dataset = c("Train","Test")),.) %>% 
   paged_table()
@@ -207,8 +207,7 @@ This bodes well for the accuracy of our predictions, but likely means we will ne
 
 While tree-based models can handle asymmetric target variables, transforming these variable can make models more accurate, especially in this case. The reason: our model will be evaluated on RMSE, so the long tail we are worried about (high-priced homes) are likely to have an outsize impact on the overall error figure. In this paper, we'll apply a log transformation using the `TransformedTargetRegressor` found in Scikit-learn. Upon inspection below, we can see that this produces a reasonably well-distributed variable without invoking more complex transformations like the quantile.
 
-```{r}
-
+```{r, cache = TRUE}
 density <- density(log(train4$SalePrice))
 
 fig <- plot_ly(x = ~density$x, y = ~density$y, type = 'scatter', mode = 'lines', fill = 'tozeroy')
@@ -230,7 +229,7 @@ We are finally ready to train our model. We'll be applying three tree-based mode
 
 We must build our explanatory and target matrices in Python.
 
-```{python}
+```{python, cache = TRUE}
 import numpy as np
 from sklearn.preprocessing import quantile_transform
 X = r.train4.iloc[:,1:-1] #dropping ID variable
@@ -242,7 +241,7 @@ y_transformed = np.log1p(y)
 
 Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package called `BoostaRoota` that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
 
-```{python, cache = TRUE}
+```{python, cache = TRUE, message = FALSE, warning = FALSE,results = 'hide'}
 import pandas as pd
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import OneHotEncoder, QuantileTransformer, quantile_transform
@@ -256,7 +255,7 @@ br.fit(X_xgb,y_transformed)
 
 This variable selection returns \~16% of the total dummified variables. Interestingly though, \~% of the underlying variables are included. In effect, most of the dimensionality reduction comes from reducing dummified options of categorical variables.
 
-```{python, cache = TRUE}
+```{python, cache = TRUE, results = 'hide'}
 br.transform(X_xgb)
 len(br.keep_vars_)
 new_vars = np.unique([i.split("_")[0] for i in br.keep_vars_])
@@ -266,13 +265,13 @@ len(new_vars)
 
 Below are the variables we are keeping at least partially:
 
-```{python}
+```{python, cache = TRUE}
 list(new_vars)
 ```
 
 And here are the variables we are eliminating:
 
-```{python}
+```{python, cache = TRUE}
 lst = list(set(X.columns.values).difference(set(new_vars)))
 lst.sort()
 lst
@@ -296,7 +295,7 @@ Now, we will tune our models, paying particular attention to the risk of overfit
 
 For XGBoost, we use an approach inspired by [this kaggle post](https://www.kaggle.com/hamzaghanmi/xgboost-hyperparameter-tuning-using-optuna) with parameter choices ranges adapted from [this article](https://aetperf.github.io/2021/02/16/Optuna-+-XGBoost-on-a-tabular-dataset.html). Rather than using cross_val_score, we integrate the train_test_split directly into the objective function. The traditional cross_val_score approach tends to produce errors
 
-```{python, cache = TRUE, results = 'hide'}
+```{python, cache = TRUE, results = "hide"}
 from xgboost import XGBRegressor
 import optuna
 from sklearn.metrics import mean_squared_error
@@ -330,19 +329,20 @@ def objective(trial):
 
 study1 = optuna.create_study(direction='minimize')
 study1.optimize(objective, n_trials=10)
+xgb_params = study1.best_params
 ```
 
 Here are our parameters for the xgboost regression, which we will use again in the next section.
 
-```{python}
-study1.best_params
+```{python, cache = TRUE}
+xgb_params
 ```
 
 ### Light GBM regression
 
 For LightGBM, we leverage the same approach above, using hyperparameter ranges adapted from [this kaggle post](https://www.kaggle.com/somang1418/tuning-hyperparameters-under-10-minutes-lgbm).
 
-```{python, cache = TRUE, results = 'hide'}}
+```{python, cache = TRUE, results = 'hide'}
 import lightgbm as lgb
 def objective(trial):
   train_X, test_X, train_y, test_y = train_test_split(X_cat, y, test_size=0.2,random_state=42)
@@ -369,12 +369,13 @@ def objective(trial):
   return rmse
 study2 = optuna.create_study(direction='minimize')
 study2.optimize(objective, n_trials=500)
+lgb_params = study2.best_params
 ```
 
 Here are our parameters for the LightGBM regression, which we will use again in the next section.
 
-```{python}
-study2.best_params
+```{python, cache = TRUE}
+lgb_params
 ```
 
 ### CatBoost
@@ -387,33 +388,45 @@ With our hyperparameters tuned, we may evaluate our models using `cross_val_scor
 
 ### XGBoost
 
-```{python}
-xgb_model = xgb.XGBRegressor(**study1.best_params)
+```{python, cache = TRUE, warning = FALSE, message = FALSE, results = 'hide'}
+import xgboost as xgb
+xgb_model = xgb.XGBRegressor(**xgb_params)
 transformed_xgb_model = TransformedTargetRegressor(regressor = xgb_model, func = np.log1p, inverse_func = np.expm1)
-cross_val_score(transformed_xgb_model,X_xgb,y, cv = 5, scoring = 'neg_root_mean_squared_error')
+xgb_mean = -np.mean(cross_val_score(transformed_xgb_model,X_xgb,y, cv = 5, scoring = 'neg_root_mean_squared_error'))
+```
 
+```{python, cache = TRUE}
+xgb_mean
 ```
 
 ### LightBGM
 
-```{python}
-lgb_model = lgb.LGBMRegressor(**study2.best_params)
+```{python, cache = TRUE, warning = FALSE, message = FALSE,results = 'hide'}
+lgb_model = lgb.LGBMRegressor(**lgb_params)
 transformed_lgb_model = TransformedTargetRegressor(regressor = lgb_model, func = np.log1p, inverse_func = np.expm1)
-np.mean(cross_val_score(transformed_lgb_model,X_cat,y, cv = 5, scoring = 'neg_root_mean_squared_error'))
+lgb_rmse = -np.mean(cross_val_score(transformed_lgb_model,X_cat,y, cv = 5, scoring = 'neg_root_mean_squared_error'))
+```
+
+```{python, cache = TRUE}
+lgb_rmse
 ```
 
 ### CatBoost
 
-```{python}
+```{python, cache = TRUE, warning = FALSE, message = FALSE}
 from catboost import CatBoostRegressor
 cat_model = CatBoostRegressor(verbose = 0, n_estimators = 100, cat_features=list(X_cat.dtypes[X_cat.dtypes=="category"].index))
 transformed_cat_model = TransformedTargetRegressor(regressor = cat_model, func = np.log1p, inverse_func = np.expm1)
-cross_val_score(transformed_cat_model,X_cat,y, cv = 5, scoring = 'neg_root_mean_squared_error')
+cat_rmse = -np.mean(cross_val_score(transformed_cat_model,X_cat,y, cv = 5, scoring = 'neg_root_mean_squared_error'))
+```
+
+```{python, cache = TRUE}
+cat_rmse
 ```
 
 LightGBM and CatBoost appear to perform much better than XGBoost, so we will use these in our Kaggle submission. Some of XGBoost's poor performance may be due to:
 
-1.   Its slow hyperparameter tuning speed, which allowed for fewer training iterations in a reasonable amount of time on a personal computer.
+1.  Its slow hyperparameter tuning speed, which allowed for fewer training iterations in a reasonable amount of time on a personal computer.
 2.  Its poorer handling of categorical features, which are very prominent in this dataset.
 
 # Results
@@ -424,18 +437,28 @@ We are now ready to test our models against the kaggle submission set
 
 ### Data preparation and final model training
 
-```{python}
+```{python, cache = TRUE, warning = FALSE, message = FALSE, results = 'hide'}
 testX = r.test4.iloc[:,1:] #dropping ID variable
-testX_cat =testX[new_vars]
+testX_cat = testX[new_vars]
 transformed_lgb_model.fit(X_cat,y)
 transformed_cat_model.fit(X_cat,y)
+```
+
+### Create submission files
+
+```{python, cache = TRUE, warning = FALSE, message = FALSE, results = 'hide'}
+lgb_results = transformed_lgb_model.predict(testX_cat)
+cat_results = transformed_cat_model.predict(testX_cat)
+ids = range(1461,1461+1459)
+pd.DataFrame({'ID': ids,'SalePrice': [i[0] for i in lgb_results]}).to_csv("kaggle_submit/lightgbm.csv",index = False)
+pd.DataFrame({'ID': ids,'SalePrice': [i[0] for i in cat_results]}).to_csv("kaggle_submit/catboost.csv",index = False)
 ```
 
 ## Feature importance
 
 ### LightGBM
 
-Below are the top 10 features from the LightGBM model
+Below are the top features from the light GBM model
 
 ```{python}
 import matplotlib.pyplot as plt
@@ -473,4 +496,4 @@ There are some common themes and notable differences in the sets of features lis
 -   Type of sale
 -   Kitchen metrics
 
-But there are also some very notable differences. Beyond the square footage, CatBoost concentrates its importance in the Overall Quality rating of the home. LightGBM, takes a more nuanced approach, leveraging multiple factors that might imply quality but are most directly tied to home square footage. In fact, factors 2 - 8 for LightGBM are all tied to the size of the home. This is unfortunate news for would-be renovators, since improving room quality is much easier than increasing square footage. These renovators would hope that CatBoost's interpretation is correct. That said, the fact that both models produce similar accuracy
+But there are also some very notable differences. Beyond the square footage, CatBoost concentrates its importance in the Overall Quality rating of the home. LightGBM, takes a more nuanced approach, leveraging multiple factors that might imply quality but are most directly tied to home square footage. In fact, factors 2 - 8 for LightGBM are all tied to the size of the home. This is unfortunate news for would-be renovators, since improving room quality is much easier than increasing square footage. These renovators would hope that CatBoost's interpretation is correct. That said, the fact that both models produce similar accuracy in the test set may suggest that both capture some important aspect of the market.
