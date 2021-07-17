@@ -374,11 +374,11 @@ study2.optimize(objective, n_trials=500)
 Here are our parameters for the LightGBM regression, which we will use again in the next section.
 
 ```{python}
-study1.best_params
+study2.best_params
 ```
 
 ### CatBoost
 
-CatBoost has hyperparameter tuning built-in, so we will skip to the next section
+CatBoost has hyperparameter tuning built-in, so no further effort is required here.
 
 ## Final training
