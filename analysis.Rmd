@@ -283,7 +283,7 @@ The major trends here are:
 
 -   Foundational aspects of the home (e.g. utilities, foundation, roofing) tend to be thrown out, whereas more visual features (e.g. Lot area, fencing, fireplaces, bedroom counts, age) tend to be included.
 
--   There are some notable exceptions to the rule (e.g. KitchenQual and PoolQual) that might make some homeowners think twice about renovations
+-   Year sold does not seem to be a driving factor. This is highly counterintuitive given cyclicality in the underlying housing market, and may be a weakness of this model.
 
 The list includes some obvious entries (e.g. Street), but some very insightful ones (e.g. Pool metrics, roofing, heating, and electrical). We will return to the feature importance discussion after running our models.
 
@@ -496,8 +496,8 @@ py$results2 %>% paged_table()
 
 There are some common themes and notable differences in the sets of features listed above. Both list square footage above ground (GrLivArea) as one of the most important predictors of housing prices. Also both discount some commonly assumed factors as minimally important, such as:
 
--   Year Built
 -   Type of sale
--   Kitchen metrics
+-   Kitchen-related metrics
+-   Street and zoning-related metrics
 
-But there are also some very notable differences. Beyond the square footage, CatBoost concentrates its importance in the Overall Quality rating of the home. LightGBM, takes a more nuanced approach, leveraging multiple factors that might imply quality but are most directly tied to home square footage. In fact, factors 2 - 8 for LightGBM are all tied to the size of the home. This is unfortunate news for would-be renovators, since improving room quality is much easier than increasing square footage. These renovators would hope that CatBoost's interpretation is correct. That said, the fact that both models produce similar accuracy in the test set may suggest that both capture some important aspect of the market.
+But there are also some very notable differences. Beyond the square footage, CatBoost concentrates its importance in the Overall Quality rating of the home. LightGBM, takes a more nuanced approach, leveraging multiple factors that might imply quality but are most directly tied to home square footage. In fact, the majority of LightGBM's top 10 factors are all tied to the size of the home. This is unfortunate news for would-be renovators, since improving room quality is much easier than increasing square footage, although "YearRemodAdd" is also a factor. Renovators would hope that CatBoost's interpretation is correct. That said, the fact that both models produce similar accuracy in the test set may suggest that both capture some important aspect of the underlying market dynamics.
