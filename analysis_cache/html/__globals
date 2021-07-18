@@ -1,0 +1,14 @@
+load data	paged_table	read_csv
+unnamed-chunk-1	%>%	~	$	layout	library	list	plot_ly	train
+unnamed-chunk-2	.	%>%	>	cumsum	filter	library	miss_var_summary	mutate	n_miss	paged_table	sum	train
+unnamed-chunk-3	::	.	[[<-	%>%	c	for	list	return	train
+unnamed-chunk-4	.	%>%	>	filter	miss_var_summary	n_miss	paged_table	train2
+unnamed-chunk-5	.	%>%	>	correct_NA	filter	miss_var_summary	n_miss	paged_table	test
+unnamed-chunk-6	.	%>%	~	across	as.data.frame	as.factor	is.character	MSSubClass	mutate	mutate_at	return	test2	train2	vars	where
+unnamed-chunk-7	$	library	missForest	registerDoParallel	test3	train3
+unnamed-chunk-8	.	%>%	$	bind_cols	bind_rows	c	data.frame	miss_test	miss_train	paged_table
+unnamed-chunk-9	.	%>%	<=	~	as.vector	empirical_cdf	GKtauDataframe	layout	library	list	plot_ly	seq	train4
+unnamed-chunk-10	::	.	%>%	<=	~	$	abs	as.vector	empirical_cdf	layout	list	na.omit	plot_ly	seq	train4
+unnamed-chunk-11	%>%	~	$	layout	list	log	plot_ly	train4
+unnamed-chunk-30	%>%	$	paged_table	py
+unnamed-chunk-32	%>%	$	paged_table	py

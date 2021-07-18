@@ -1,7 +1,7 @@
 ---
 title: "Ames Housing dataset analysis"
 description: |
-  This analysis applies advanced tree-based learning algorithms to predict housing prices in the ![Ames housing dataset](https://www.kaggle.com/c/house-prices-advanced-regression-techniques/overview). It also identifies YY as the ZZ most important factors in driving housing prices.
+  This analysis applies advanced tree-based learning algorithms to predict housing prices in the ![Ames housing dataset](https://www.kaggle.com/c/house-prices-advanced-regression-techniques/overview). It also identifies the most important factors in driving housing prices.
 author:
   - name: Justin Leder
 output: 
@@ -166,9 +166,9 @@ bind_rows(miss_train$OOBerror,miss_test$OOBerror) %>%
 
 ## Multicollinearity
 
-Given there are 80 explanatory variables in the dataset, it is unsurprising that multicollinearity is a signficiant concern. To size the issue, we must first define correlation in the context of a mix of categorical and numerical variables. We do so by leveraging the `GoodmanKruskal` package, which implements Goodman and Kruskal's tau measure. The tau measure is a association statistic that allows for (1) all variable types and (2) asymmetric relationships. It represents the proportion of variation in one variable that can be explained by another. Below is the cumulative distribution of tau measure across variable pairs:
+Given there are 80 explanatory variables in the dataset, it is unsurprising that multicollinearity is a significant concern. To size the issue, we must first define correlation in the context of a mix of categorical and numerical variables. We do so by leveraging the `GoodmanKruskal` package, which implements Goodman and Kruskal's tau measure. The tau measure is a association statistic that allows for (1) all variable types and (2) asymmetric relationships. It represents the proportion of variation in one variable that can be explained by another. Below is the cumulative distribution of tau measure across variable pairs:
 
-```{r, cache = TRUE}
+```{r, cache = TRUE, message = FALSE, warning = FALSE}
 library(mltools)
 library(GoodmanKruskal)
 gktau <- train4 %>% 
@@ -185,7 +185,7 @@ As it turns out, multicollinearity is not as big of an issue here as would be fe
 
 To confirm this finding with a more intuitive association measure, let's consider the distribution of Pearson correlation coefficients among the numeric variables. Below is the analogous cumulative distribution plot:
 
-```{r, cache = TRUE}
+```{r, cache = TRUE, message = FALSE, warning = FALSE}
 pears_vec <- lsr::correlate(train4) %>% 
   .$correlation %>% 
   as.vector(.) %>% 
@@ -239,7 +239,7 @@ y_transformed = np.log1p(y)
 
 ## Feature selection
 
-Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perfrom the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package called `BoostaRoota` that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
+Because hyperparameter tuning and other model steps are very computationally involved, this paper chooses to perform the feature selection step first. This is an imperfect choice, but should allow for much more reasonable calculation times on a personal computer. To do so, we'll leverage a relatively unknown package called `BoostaRoota` that allows for a quick implementation of XGBoost and other boosting algorithms into the Boruta framework. In particular, it automates categorical variable encoding, which significantly reduces user complexity.
 
 ```{python, cache = TRUE, message = FALSE, warning = FALSE,results = 'hide'}
 import pandas as pd
@@ -253,7 +253,7 @@ X_xgb = pd.get_dummies(X)
 br.fit(X_xgb,y_transformed)
 ```
 
-This variable selection returns \~16% of the total dummified variables. Interestingly though, \~% of the underlying variables are included. In effect, most of the dimensionality reduction comes from reducing dummified options of categorical variables.
+This variable selection returns \~16% of the total dummified variables. Interestingly though, a little over half of the underlying variables are included. In effect, most of the dimensionality reduction comes from reducing dummified options of categorical variables.
 
 ```{python, cache = TRUE, results = 'hide'}
 br.transform(X_xgb)
@@ -289,7 +289,7 @@ The list includes some obvious entries (e.g. Street), but some very insightful o
 
 ## Hyperparameter tuning
 
-Now, we will tune our models, paying particular attention to the risk of overfitting. Because of the complexity and continuity of the search space for tree-based model parameters, we'll use `Optuna` to help us reach optimal parameters faster.
+Now, we will tune our models, paying particular attention to the risk of over-fitting. Because of the complexity and continuity of the search space for tree-based model parameters, we'll use `Optuna` to help us reach optimal parameters faster.
 
 ### XGBoost
 
@@ -399,7 +399,7 @@ xgb_mean = -np.mean(cross_val_score(transformed_xgb_model,X_xgb,y, cv = 5, scori
 xgb_mean
 ```
 
-### LightBGM
+### LightGBM
 
 ```{python, cache = TRUE, warning = FALSE, message = FALSE,results = 'hide'}
 lgb_model = lgb.LGBMRegressor(**lgb_params)
@@ -454,13 +454,17 @@ pd.DataFrame({'ID': ids,'SalePrice': [i[0] for i in lgb_results]}).to_csv("kaggl
 pd.DataFrame({'ID': ids,'SalePrice': [i[0] for i in cat_results]}).to_csv("kaggle_submit/catboost.csv",index = False)
 ```
 
+### Submission results
+
+Catboost performed slightly better, with an RMSE of 0.13119, vs. lightGBM's result of 0.13620. Either way, both placed in the top \~40% of submissions. By no means ideal, but a reasonably exciting result!
+
 ## Feature importance
 
 ### LightGBM
 
 Below are the top features from the light GBM model
 
-```{python}
+```{python, cache = TRUE}
 import matplotlib.pyplot as plt
 importances = transformed_lgb_model.regressor_.feature_importances_
 importances = [val/sum(importances) for val in importances]
@@ -469,13 +473,13 @@ results = pd.DataFrame({'Features': X_cat.columns,
 results.sort_values(by='Importances', inplace=True, ascending = False)
 ```
 
-```{r}
+```{r, cache = TRUE}
 py$results %>% paged_table()
 ```
 
 ### Catboost
 
-```{python}
+```{python, cache = TRUE}
 import matplotlib.pyplot as plt
 importances = transformed_cat_model.regressor_.feature_importances_
 importances = [val/sum(importances) for val in importances]
@@ -484,7 +488,7 @@ results2 = pd.DataFrame({'Features': X_cat.columns,
 results2.sort_values(by='Importances', inplace=True, ascending = False)
 ```
 
-```{r}
+```{r, cache = TRUE}
 py$results2 %>% paged_table()
 ```
 
